@@ -37,6 +37,7 @@ dependencies = [
     "treescope>=0.1.7",
     "transformers==4.53.2",
     "rich>=14.0.0",
+    "scipy==1.15.3",
     "polars>=1.30.0",
 ]
 
