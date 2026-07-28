@@ -963,8 +963,9 @@ _CONFIGS = [
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
         ),
+        # export HF_LEROBOT_HOME=/app/data
         data=LeRobotURDataConfig(
-            repo_id="V21_NEW",
+            repo_id="pick_20260725_174915_20fps_crop_vid_tcp",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),

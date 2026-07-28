@@ -7,7 +7,7 @@ from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+import lerobot.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import torch
 
@@ -127,6 +127,29 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
+def _normalize_lerobot_tasks(tasks) -> dict[int, str]:
+    """Convert LeRobot task metadata to OpenPI's task-index mapping."""
+
+    # LeRobot v3 / 0.4.x returns task metadata as a pandas DataFrame.
+    if hasattr(tasks, "iterrows"):
+        return {
+            int(row["task_index"]): str(task_text)
+            for task_text, row in tasks.iterrows()
+        }
+
+    # Keep compatibility with the older dict representation.
+    if isinstance(tasks, dict):
+        return {
+            int(task_index): str(task_text)
+            for task_index, task_text in tasks.items()
+        }
+
+    raise TypeError(
+        "Unsupported LeRobot task metadata type: "
+        f"{type(tasks).__name__}"
+    )
+
+
 def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
 ) -> Dataset:
@@ -145,8 +168,15 @@ def create_torch_dataset(
         },
     )
 
+    # if data_config.prompt_from_task:
+    #     dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
     if data_config.prompt_from_task:
-        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+        tasks = _normalize_lerobot_tasks(dataset_meta.tasks)
+
+        dataset = TransformedDataset(
+            dataset,
+            [_transforms.PromptFromLeRobotTask(tasks)],
+        )
 
     return dataset
 
