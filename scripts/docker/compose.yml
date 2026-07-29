@@ -1,25 +1,53 @@
-# Run with:
-# docker compose -f scripts/docker/compose.yml up --build
+# Run from the repository root with:
+#
+# Development container:
+#
+# docker build \
+#   -p openpi-v3 \
+#   -f scripts/docker/compose.yml \
+#   -f scripts/docker/compose.dev.yml \
+#   -f scripts/docker/compose.proxy.yml \
+#   -f scripts/docker/compose.codex.yml \
+#   build --progress=plain
+#
+# docker compose \
+#   -p openpi-v3 \
+#   -f scripts/docker/compose.yml \
+#   -f scripts/docker/compose.dev.yml \
+#   -f scripts/docker/compose.proxy.yml \
+#   -f scripts/docker/compose.codex.yml \
+#   up -d
+
+
 services:
   openpi_server:
-    image: openpi_server
+    # Dedicated image tag for the LeRobot Dataset v3 branch.
+    image: openpi_server:lerobot-v3
+
     build:
+      # compose.yml is located in scripts/docker/.
+      # Therefore ../.. points to this worktree's repository root.
       context: ../..
       dockerfile: scripts/docker/serve_policy.Dockerfile
+
     init: true
     tty: true
     network_mode: host
-    # Populate configured openpi data home to /openpi_assets inside the container.
-    # Populate aws credential inside the container.
+
     volumes:
-      - $PWD:/app
+      # Bind the repository root containing this compose.yml to /app.
+      # Do not use $PWD, because it depends on the shell's current directory.
+      - ../..:/app
+
+      # OpenPI assets and checkpoints.
       - ${OPENPI_DATA_HOME:-~/.cache/openpi}:/openpi_assets
+
     environment:
       - SERVER_ARGS
       - OPENPI_DATA_HOME=/openpi_assets
       - IS_DOCKER=true
 
-    # Comment out this block if not running on a machine with GPUs.
+    # Comment out this block on machines without an NVIDIA GPU.
     deploy:
       resources:
         reservations:

@@ -1,0 +1,11 @@
+services:
+  openpi_server:
+    container_name: openpi-dev
+
+    # 覆盖官方镜像中启动 Policy Server 的默认 CMD。
+    entrypoint: ["/bin/bash", "-lc"]
+    command: ["exec sleep infinity"]
+
+    # 服务器或 Docker 重启后自动恢复；
+    # 手动 stop 后保持停止。
+    restart: unless-stopped
