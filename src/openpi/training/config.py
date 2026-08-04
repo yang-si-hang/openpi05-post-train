@@ -965,7 +965,7 @@ _CONFIGS = [
         ),
         # export HF_LEROBOT_HOME=/app/data
         data=LeRobotURDataConfig(
-            repo_id="pick_20260725_174915_20fps_crop_vid_tcp",
+            repo_id="pick_v1_merge_crop_vid",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
@@ -978,8 +978,8 @@ _CONFIGS = [
         ).get_freeze_filter(),
         ema_decay=None,
         batch_size=32,
-        num_train_steps=10_000,
-        log_interval=100,
+        num_train_steps=20_000,
+        log_interval=200,
         save_interval=1000,
         num_workers=8,
         policy_metadata={

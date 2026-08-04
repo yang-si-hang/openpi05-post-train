@@ -19,12 +19,19 @@ RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive \
        apt-get install -y --no-install-recommends \
            ffmpeg \
+           tmux \
            git \
            git-lfs \
+           curl \
+           ca-certificates \
+           bubblewrap \
            linux-headers-generic \
            build-essential \
            clang \
     && rm -rf /var/lib/apt/lists/*
+
+# Default tmux configuration for the root user.
+COPY scripts/docker/tmux.conf /root/.tmux.conf
 
 # Copy from the cache instead of linking since it's a mounted volume
 ENV UV_LINK_MODE=copy
@@ -51,14 +58,6 @@ CMD ["/bin/bash", "-lc", "exec uv run --frozen scripts/serve_policy.py $SERVER_A
 
 # BEGIN CODEX CLI
 USER root
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        curl \
-        ca-certificates \
-        git \
-        bubblewrap && \
-    rm -rf /var/lib/apt/lists/*
 
 # Install the executable package outside /root/.codex.
 # /root/.codex will be reserved for persistent runtime state.
