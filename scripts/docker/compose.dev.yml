@@ -1,5 +1,7 @@
 services:
   openpi_server:
+    gpus: all
+    shm_size: "8gb"
     container_name: openpi-dev
 
     # 覆盖官方镜像中启动 Policy Server 的默认 CMD。
