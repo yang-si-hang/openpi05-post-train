@@ -1,0 +1,17 @@
+services:
+  openpi_server:
+    volumes:
+      # LeRobot Dataset v3。只读挂载，防止训练意外修改原始数据。
+      # - ${LEROBOT_DATA_ROOT}:/lerobot_data:ro
+
+      # 独立保存 checkpoint，避免输出散落在 Git 工作目录。
+      # - ${OPENPI_CHECKPOINT_ROOT}:/app/checkpoints
+
+    environment:
+      - HF_LEROBOT_HOME=/app/data/lerobot_data
+      - OPENPI_CHECKPOINT_ROOT=/app/checkpoints
+      - HF_TOKEN
+      - WANDB_API_KEY
+      - WANDB_MODE
+
+    restart: "no"

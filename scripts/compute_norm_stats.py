@@ -3,6 +3,8 @@
 This script is used to compute the normalization statistics for a given config. It
 will compute the mean and standard deviation of the data in the dataset and save it
 to the config assets directory.
+
+uv run scripts/compute_norm_stats.py --config-name pi05_ur10e_lora_finetune
 """
 
 import numpy as np

@@ -1,5 +1,24 @@
-# Run with:
-# docker compose -f scripts/docker/compose.yml up --build
+# Run from the repository root with:
+#
+# Development container:
+#
+# docker build \
+#   -p openpi-v3 \
+#   -f scripts/docker/compose.yml \
+#   -f scripts/docker/compose.dev.yml \
+#   -f scripts/docker/compose.proxy.yml \
+#   -f scripts/docker/compose.codex.yml \
+#   build --progress=plain
+#
+# docker compose \
+#   -p openpi-v3 \
+#   -f scripts/docker/compose.yml \
+#   -f scripts/docker/compose.dev.yml \
+#   -f scripts/docker/compose.proxy.yml \
+#   -f scripts/docker/compose.codex.yml \
+#   up -d
+
+
 services:
   openpi_server:
     # Dedicated image tag for the LeRobot Dataset v3 branch.
