@@ -9,6 +9,7 @@ from typing_extensions import override
 
 from openpi.models import model as _model
 from openpi.models import pi0_config
+from openpi.models import rtc_guidance
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
@@ -221,6 +222,10 @@ class Pi0(_model.BaseModel):
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
         noise: at.Float[at.Array, "b ah ad"] | None = None,
+        rtc_prev_actions: at.Float[at.Array, "b ah ad"] | None = None,
+        rtc_prefix_weights: at.Float[at.Array, " ah"] | None = None,
+        rtc_max_guidance_weight: float | at.Float[at.Array, ""] = 0.0,
+        rtc_use_vjp: bool = False,
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
@@ -230,14 +235,19 @@ class Pi0(_model.BaseModel):
         if noise is None:
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
 
+        # Keep direct callers backward compatible. Policy supplies these fixed-shape
+        # zero tensors even when RTC is disabled to keep its JIT signature stable.
+        if rtc_prev_actions is None or rtc_prefix_weights is None:
+            rtc_prev_actions = jnp.zeros((batch_size, self.action_horizon, self.action_dim), dtype=noise.dtype)
+            rtc_prefix_weights = jnp.zeros((self.action_horizon,), dtype=noise.dtype)
+
         # first fill KV cache with a forward pass of the prefix
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
         _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
 
-        def step(carry):
-            x_t, time = carry
+        def denoise(x_t, time):
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
                 observation, x_t, jnp.broadcast_to(time, batch_size)
             )
@@ -266,12 +276,34 @@ class Pi0(_model.BaseModel):
                 adarms_cond=[None, adarms_cond],
             )
             assert prefix_out is None
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            return self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+        def step(carry):
+            x_t, time = carry
+            if rtc_use_vjp:
+                v_t = rtc_guidance.apply_vjp_rtc_guidance(
+                    x_t=x_t,
+                    denoise_fn=lambda x: denoise(x, time),
+                    prev_actions=rtc_prev_actions,
+                    prefix_weights=rtc_prefix_weights,
+                    openpi_time=time,
+                    max_guidance_weight=rtc_max_guidance_weight,
+                )
+            else:
+                v_t = denoise(x_t, time)
+                v_t = rtc_guidance.apply_basic_rtc_guidance(
+                    x_t=x_t,
+                    v_t=v_t,
+                    prev_actions=rtc_prev_actions,
+                    prefix_weights=rtc_prefix_weights,
+                    openpi_time=time,
+                    max_guidance_weight=rtc_max_guidance_weight,
+                )
 
             return x_t + dt * v_t, time + dt
 
         def cond(carry):
-            x_t, time = carry
+            _, time = carry
             # robust to floating-point error
             return time >= -dt / 2
 

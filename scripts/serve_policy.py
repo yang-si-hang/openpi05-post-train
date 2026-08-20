@@ -3,7 +3,7 @@ uv run scripts/serve_policy.py \
 --port 8000 \
 policy:checkpoint \
 --policy.config=pi05_ur10e_lora_finetune \
---policy.dir=/app/data/openpi-checkpoints/pi05_ur10e_lora_finetune/pcik_test_20260728_154325/9999
+--policy.dir=/app/data/openpi-checkpoints/pi05_ur10e_lora_finetune/pick_20260818_082557/25000
 --record # 需要可开启 (置于port参数后)
 
 # test connect

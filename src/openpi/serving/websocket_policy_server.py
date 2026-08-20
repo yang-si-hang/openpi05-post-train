@@ -55,10 +55,11 @@ class WebsocketPolicyServer:
         while True:
             try:
                 start_time = time.monotonic()
-                obs = msgpack_numpy.unpackb(await websocket.recv())
+                request = msgpack_numpy.unpackb(await websocket.recv())
+                obs, rtc = _parse_inference_request(request)
 
                 infer_time = time.monotonic()
-                action = self._policy.infer(obs)
+                action = self._policy.infer(obs) if rtc is None else self._policy.infer(obs, rtc=rtc)
                 infer_time = time.monotonic() - infer_time
 
                 action["server_timing"] = {
@@ -81,6 +82,13 @@ class WebsocketPolicyServer:
                     reason="Internal server error. Traceback included in previous frame.",
                 )
                 raise
+
+
+def _parse_inference_request(request: dict) -> tuple[dict, dict | None]:
+    """Parse the optional RTC envelope while preserving the legacy observation payload."""
+    if isinstance(request, dict) and "observation" in request and "rtc" in request:
+        return request["observation"], request["rtc"]
+    return request, None
 
 
 def _health_check(connection: _server.ServerConnection, request: _server.Request) -> _server.Response | None:

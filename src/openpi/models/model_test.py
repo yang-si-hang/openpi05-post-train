@@ -1,5 +1,7 @@
 from flax import nnx
 import jax
+import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from openpi.models import model as _model
@@ -22,6 +24,61 @@ def test_pi0_model():
 
     actions = nnx_utils.module_jit(model.sample_actions)(key, obs, num_steps=10)
     assert actions.shape == (batch_size, model.action_horizon, model.action_dim)
+
+
+def test_pi0_rtc_disabled_matches_plain_sampling():
+    key = jax.random.key(0)
+    config = pi0_config.Pi0Config(
+        paligemma_variant="dummy",
+        action_expert_variant="dummy",
+        action_dim=4,
+        action_horizon=5,
+    )
+    model = config.create(key)
+    obs = config.fake_obs(batch_size=1)
+    noise = jax.random.normal(jax.random.key(1), (1, config.action_horizon, config.action_dim))
+    sample_actions = nnx_utils.module_jit(model.sample_actions, static_argnames=("rtc_use_vjp",))
+
+    plain = sample_actions(key, obs, num_steps=2, noise=noise)
+    rtc_disabled = sample_actions(
+        key,
+        obs,
+        num_steps=2,
+        noise=noise,
+        rtc_prev_actions=jnp.zeros_like(noise),
+        rtc_prefix_weights=jnp.zeros((config.action_horizon,), dtype=noise.dtype),
+        rtc_max_guidance_weight=jnp.asarray(5.0),
+        rtc_use_vjp=False,
+    )
+
+    np.testing.assert_allclose(rtc_disabled, plain, rtol=1e-7, atol=1e-7)
+
+    rtc_enabled = sample_actions(
+        key,
+        obs,
+        num_steps=2,
+        noise=noise,
+        rtc_prev_actions=jnp.zeros_like(noise),
+        rtc_prefix_weights=jnp.array([1.0, 0.5, 0.0, 0.0, 0.0], dtype=noise.dtype),
+        rtc_max_guidance_weight=jnp.asarray(5.0),
+        rtc_use_vjp=False,
+    )
+    assert rtc_enabled.shape == plain.shape
+    assert np.all(np.isfinite(rtc_enabled))
+    assert not np.allclose(rtc_enabled, plain)
+
+    rtc_vjp = sample_actions(
+        key,
+        obs,
+        num_steps=2,
+        noise=noise,
+        rtc_prev_actions=jnp.zeros_like(noise),
+        rtc_prefix_weights=jnp.array([1.0, 0.5, 0.0, 0.0, 0.0], dtype=noise.dtype),
+        rtc_max_guidance_weight=jnp.asarray(5.0),
+        rtc_use_vjp=True,
+    )
+    assert rtc_vjp.shape == plain.shape
+    assert np.all(np.isfinite(rtc_vjp))
 
 
 def test_pi0_lora_model():

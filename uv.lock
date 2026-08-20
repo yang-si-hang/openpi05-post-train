@@ -3259,7 +3259,7 @@ dev = [
 requires-dist = [
     { name = "dm-tree", specifier = ">=0.1.8" },
     { name = "msgpack", specifier = ">=1.0.5" },
-    { name = "numpy", specifier = ">=1.22.4,<2.0.0" },
+    { name = "numpy", specifier = ">=1.22.4,<3.0.0" },
     { name = "pillow", specifier = ">=9.0.0" },
     { name = "websockets", specifier = ">=11.0" },
 ]
