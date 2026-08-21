@@ -11,7 +11,8 @@ services:
       - HF_LEROBOT_HOME=/app/data/lerobot_data
       - OPENPI_CHECKPOINT_ROOT=/app/checkpoints
       - HF_TOKEN
-      - WANDB_API_KEY
-      - WANDB_MODE
+      - WANDB_API_KEY=${WANDB_API_KEY:?WANDB_API_KEY is required}     # 提前设置好wandb key
+      - WANDB_MODE=online
+      - XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
 
     restart: "no"

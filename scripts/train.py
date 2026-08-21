@@ -1,8 +1,10 @@
 """
 cd /app
 
-export EXP_NAME="pick_test_$(date +%Y%m%d_%H%M%S)"
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+
+export EXP_NAME="pick_$(date +%Y%m%d_%H%M%S)"
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
+CUDA_VISIBLE_DEVICES=0,1 \
 uv run --frozen scripts/train.py \
   pi05_ur10e_lora_finetune \
   --exp-name="$EXP_NAME"

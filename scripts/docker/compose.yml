@@ -2,6 +2,7 @@
 #
 # Development container:
 #
+# create container; -p is the project name
 # docker build \
 #   -p openpi-v3 \
 #   -f scripts/docker/compose.yml \
@@ -18,6 +19,14 @@
 #   -f scripts/docker/compose.codex.yml \
 #   up -d
 
+# Start using an already existing image:
+# docker compose \
+#   -p openpi-v3 \
+#   -f scripts/docker/compose.yml \
+#   -f scripts/docker/compose.dev.yml \
+#   -f scripts/docker/compose.proxy.yml \
+#   -f scripts/docker/compose.codex.yml \
+#   up -d --no-build
 
 services:
   openpi_server:
