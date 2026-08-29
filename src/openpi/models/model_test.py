@@ -4,7 +4,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from openpi.models import gemma
 from openpi.models import model as _model
+from openpi.models import pi0
 from openpi.models import pi0_config
 from openpi.models import pi0_fast
 from openpi.shared import download
@@ -79,6 +81,102 @@ def test_pi0_rtc_disabled_matches_plain_sampling():
     )
     assert rtc_vjp.shape == plain.shape
     assert np.all(np.isfinite(rtc_vjp))
+
+
+def test_train_time_rtc_corruption_and_loss_normalization():
+    actions = jnp.arange(2 * 5 * 3, dtype=jnp.float32).reshape(2, 5, 3)
+    noise = -actions
+    time = jnp.array([0.25, 0.75], dtype=jnp.float32)
+    delay = jnp.array([0, 3], dtype=jnp.int32)
+
+    x_t, token_time, prefix_mask = pi0.apply_train_time_rtc_corruption(actions, noise, time, delay)
+
+    np.testing.assert_array_equal(prefix_mask[0], np.zeros(5, dtype=bool))
+    np.testing.assert_array_equal(prefix_mask[1], np.array([True, True, True, False, False]))
+    np.testing.assert_array_equal(token_time[1, :3], np.zeros(3, dtype=np.float32))
+    np.testing.assert_array_equal(x_t[1, :3], actions[1, :3])
+
+    per_step_loss = jnp.ones((2, 5), dtype=jnp.float32)
+    normalized = pi0.normalize_postfix_loss(per_step_loss, prefix_mask)
+    np.testing.assert_allclose(jnp.mean(normalized), 1.0, rtol=1e-6)
+
+
+def test_train_time_rtc_delay_sampling_includes_both_endpoints():
+    delay = pi0.sample_train_time_rtc_delay(jax.random.key(123), (4096,), max_delay=4)
+    assert int(jnp.min(delay)) == 0
+    assert int(jnp.max(delay)) == 4
+
+
+def test_pi05_train_time_rtc_hard_prefix_sampling():
+    config = pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="dummy",
+        action_expert_variant="dummy",
+        action_dim=4,
+        action_horizon=5,
+        train_time_rtc_max_delay=3,
+    )
+    model = config.create(jax.random.key(0))
+    obs = config.fake_obs(batch_size=2)
+    noise = jax.random.normal(jax.random.key(1), (2, config.action_horizon, config.action_dim))
+    prev_actions = jax.random.normal(jax.random.key(2), noise.shape)
+    prefix_len = jnp.array([0, 2], dtype=jnp.int32)
+
+    loss = nnx_utils.module_jit(model.compute_loss)(jax.random.key(3), obs, prev_actions)
+    assert loss.shape == (2, config.action_horizon)
+    assert np.all(np.isfinite(loss))
+
+    sample_actions = nnx_utils.module_jit(model.sample_actions, static_argnames=("rtc_use_vjp",))
+    result = sample_actions(
+        jax.random.key(4),
+        obs,
+        num_steps=2,
+        noise=noise,
+        rtc_prev_actions=prev_actions,
+        rtc_prefix_len=prefix_len,
+        rtc_use_vjp=False,
+    )
+
+    np.testing.assert_array_equal(result[1, :2], prev_actions[1, :2])
+    assert np.all(np.isfinite(result))
+
+    plain = sample_actions(jax.random.key(4), obs, num_steps=2, noise=noise)
+    zero_prefix = sample_actions(
+        jax.random.key(4),
+        obs,
+        num_steps=2,
+        noise=noise,
+        rtc_prev_actions=prev_actions,
+        rtc_prefix_len=jnp.zeros((2,), dtype=jnp.int32),
+        rtc_use_vjp=False,
+    )
+    np.testing.assert_array_equal(zero_prefix, plain)
+
+
+def test_train_time_rtc_preserves_parameter_tree_and_adarms_supports_token_conditioning():
+    common = {
+        "pi05": True,
+        "paligemma_variant": "dummy",
+        "action_expert_variant": "dummy",
+        "action_dim": 4,
+        "action_horizon": 5,
+    }
+    plain_model = pi0_config.Pi0Config(**common).create(jax.random.key(0))
+    rtc_model = pi0_config.Pi0Config(**common, train_time_rtc_max_delay=3).create(jax.random.key(0))
+    assert jax.tree.structure(nnx.state(plain_model)) == jax.tree.structure(nnx.state(rtc_model))
+    plain_shapes = [leaf.shape for leaf in jax.tree.leaves(nnx.state(plain_model))]
+    rtc_shapes = [leaf.shape for leaf in jax.tree.leaves(nnx.state(rtc_model))]
+    assert plain_shapes == rtc_shapes
+
+    norm = gemma.RMSNorm()
+    tokens = jnp.ones((2, 5, 8), dtype=jnp.float32)
+    global_cond = jnp.ones((2, 8), dtype=jnp.float32)
+    variables = norm.init(jax.random.key(1), tokens, global_cond)
+    global_output, global_gate = norm.apply(variables, tokens, global_cond)
+    token_output, token_gate = norm.apply(variables, tokens, jnp.ones((2, 5, 8), dtype=jnp.float32))
+    assert global_output.shape == token_output.shape == tokens.shape
+    assert global_gate.shape == (2, 1, 8)
+    assert token_gate.shape == tokens.shape
 
 
 def test_pi0_lora_model():

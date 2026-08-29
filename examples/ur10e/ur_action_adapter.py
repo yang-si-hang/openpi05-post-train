@@ -1,7 +1,7 @@
 from collections.abc import Mapping, Sequence
 import concurrent.futures
 import copy
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from openpi_client import action_chunk_broker
@@ -119,14 +119,16 @@ class RTCActionChunkBroker(_base_policy.BasePolicy):
         *,
         prediction_horizon: int,
         replan_interval: int,
+        rtc_mode: Literal["non_vjp", "vjp", "train_rtc"],
         prefix_len: int,
         decay_end: int | None = None,
         schedule: str = "exp",
         max_guidance_weight: float = 5.0,
-        use_vjp: bool = False,
     ):
         if prediction_horizon <= 0:
             raise ValueError("prediction_horizon must be positive")
+        if rtc_mode not in {"non_vjp", "vjp", "train_rtc"}:
+            raise ValueError(f"Unknown RTC mode: {rtc_mode}")
         if not 0 < replan_interval < prediction_horizon:
             raise ValueError("replan_interval must be between 1 and prediction_horizon - 1")
         remaining_horizon = prediction_horizon - replan_interval
@@ -140,17 +142,15 @@ class RTCActionChunkBroker(_base_policy.BasePolicy):
             raise ValueError(f"Unknown RTC schedule: {schedule}")
         if not np.isfinite(max_guidance_weight) or max_guidance_weight < 0:
             raise ValueError("max_guidance_weight must be finite and non-negative")
-        if not isinstance(use_vjp, (bool, np.bool_)):
-            raise TypeError("use_vjp must be a boolean")
 
         self._policy = policy
         self._prediction_horizon = prediction_horizon
         self._replan_interval = replan_interval
+        self._rtc_mode = rtc_mode
         self._prefix_len = prefix_len
         self._decay_end = decay_end
         self._schedule = schedule
         self._max_guidance_weight = max_guidance_weight
-        self._use_vjp = bool(use_vjp)
 
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="openpi-rtc")
         self._last_results: dict[str, Any] | None = None
@@ -176,9 +176,16 @@ class RTCActionChunkBroker(_base_policy.BasePolicy):
 
         result = self._slice_result(self._last_results, self._cur_step)
         result["rtc_broker_info"] = {
+            "requested_mode": self._rtc_mode,
             "chunk_step": self._cur_step,
             "inference_pending": self._pending_future is not None,
+            "planned_prefix_len": self._prefix_len,
             "last_replan_elapsed_steps": self._last_replan_elapsed_steps,
+            "late_by_steps": (
+                None
+                if self._last_replan_elapsed_steps is None
+                else max(self._last_replan_elapsed_steps - self._prefix_len, 0)
+            ),
         }
         self._cur_step += 1
         return result
@@ -197,19 +204,35 @@ class RTCActionChunkBroker(_base_policy.BasePolicy):
         if len(prev_actions_abs) == 0:
             raise RuntimeError("Cannot start RTC inference without remaining actions")
 
-        rtc = {
-            "prev_actions_abs": prev_actions_abs,
-            "prefix_len": self._prefix_len,
-            "decay_end": self._decay_end,
-            "schedule": self._schedule,
-            "max_guidance_weight": self._max_guidance_weight,
-            "use_vjp": self._use_vjp,
-        }
+        rtc = self._make_rtc_request(prev_actions_abs)
         # Snapshot the observation at exactly the same cursor used to slice the
         # previous chunk. The caller may mutate its observation after this call.
         observation = copy.deepcopy(obs)
         self._request_cursor = request_cursor
         self._pending_future = self._executor.submit(self._policy.infer, observation, rtc=rtc)
+
+    def _make_rtc_request(self, prev_actions_abs: np.ndarray) -> dict[str, Any]:
+        rtc: dict[str, Any] = {
+            "mode": self._rtc_mode,
+            "prev_actions_abs": prev_actions_abs,
+            "prefix_len": self._prefix_len,
+        }
+        if self._rtc_mode != "train_rtc":
+            rtc.update(
+                decay_end=self._decay_end,
+                schedule=self._schedule,
+                max_guidance_weight=self._max_guidance_weight,
+            )
+        return rtc
+
+    def warmup(self, obs: dict) -> None:
+        """Compile the selected RTC path without changing broker execution state."""
+        if self._last_results is not None or self._pending_future is not None:
+            raise RuntimeError("RTC broker warmup must run before execution starts")
+        plain_result = self._policy.infer(copy.deepcopy(obs))
+        self._validate_chunk(plain_result)
+        prev_actions_abs = np.asarray(plain_result["actions"])[self._replan_interval :].copy()
+        self._policy.infer(copy.deepcopy(obs), rtc=self._make_rtc_request(prev_actions_abs))
 
     def _maybe_install_pending_chunk(self) -> None:
         if self._pending_future is None or self._request_cursor is None:
@@ -310,14 +333,14 @@ def create_rtc_action_broker(
     policy: _base_policy.BasePolicy,
     metadata: Mapping[str, Any],
     *,
+    rtc_mode: Literal["non_vjp", "vjp", "train_rtc"],
+    prefix_len: int,
     replan_interval: int = 10,
-    prefix_len: int = 1,
     decay_end: int | None = None,
     schedule: str = "exp",
     max_guidance_weight: float = 5.0,
-    use_vjp: bool = False,
 ) -> RTCActionChunkBroker:
-    """Build an asynchronous absolute-action broker for test-time RTC."""
+    """Build an asynchronous absolute-action broker for the explicitly selected RTC mode."""
     prediction_horizon = int(metadata.get("prediction_horizon", 0))
     action_dim = int(metadata.get("action_dim", 0))
     if prediction_horizon <= 0:
@@ -329,9 +352,9 @@ def create_rtc_action_broker(
         policy=RelativeTCPToAbsolutePolicy(policy, prediction_horizon),
         prediction_horizon=prediction_horizon,
         replan_interval=replan_interval,
+        rtc_mode=rtc_mode,
         prefix_len=prefix_len,
         decay_end=decay_end,
         schedule=schedule,
         max_guidance_weight=max_guidance_weight,
-        use_vjp=use_vjp,
     )

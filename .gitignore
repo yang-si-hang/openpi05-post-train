@@ -169,3 +169,5 @@ cython_debug/
 
 # UV version
 .tools/
+
+work_dirs/

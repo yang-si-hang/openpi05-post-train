@@ -32,6 +32,12 @@ class Pi0Config(_model.BaseModelConfig):
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
+    # Enables training-time action-prefix conditioning for JAX Pi0.5. A positive
+    # value samples an integer delay uniformly from the closed interval
+    # [0, train_time_rtc_max_delay]. Zero preserves the original training and
+    # sampling behavior.
+    train_time_rtc_max_delay: int = 0
+
     pytorch_compile_mode: str | None = "max-autotune"
 
     def __post_init__(self):
@@ -39,6 +45,13 @@ class Pi0Config(_model.BaseModelConfig):
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:
             object.__setattr__(self, "discrete_state_input", self.pi05)
+        if self.train_time_rtc_max_delay < 0:
+            raise ValueError("train_time_rtc_max_delay must be non-negative")
+        if self.train_time_rtc_max_delay > 0:
+            if not self.pi05:
+                raise ValueError("Training-time RTC is only supported for Pi0.5")
+            if self.train_time_rtc_max_delay >= self.action_horizon:
+                raise ValueError("train_time_rtc_max_delay must be smaller than action_horizon")
         if self.pytorch_compile_mode is not None:
             assert self.pytorch_compile_mode in [
                 "default",
@@ -56,7 +69,7 @@ class Pi0Config(_model.BaseModelConfig):
 
     @override
     def create(self, rng: at.KeyArrayLike) -> "Pi0":
-        from openpi.models.pi0 import Pi0
+        from openpi.models.pi0 import Pi0  # noqa: PLC0415  # Avoid a model/config import cycle.
 
         return Pi0(self, rngs=nnx.Rngs(rng))
 

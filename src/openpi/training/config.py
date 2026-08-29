@@ -965,7 +965,7 @@ _CONFIGS = [
         ),
         # export HF_LEROBOT_HOME=/app/data/lerobot_data
         data=LeRobotURDataConfig(
-            repo_id="pick_v3_merge_crop_vid",
+            repo_id="pick_v4_merge_crop_vid",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
@@ -988,6 +988,45 @@ _CONFIGS = [
             "execution_horizon": 10,
             "action_dim": ur_policy.UR_ACTION_DIM,
             "action_representation": "tcp_relative_xyz_rot6d_absolute_gripper",
+            "control_frequency_hz": 20,
+        },
+    ),
+    TrainConfig(
+        name="pi05_ur10e_lora_train_time_rtc",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=20,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            # Sample an integer delay uniformly from the closed interval [0, 4].
+            train_time_rtc_max_delay=4,
+        ),
+        data=LeRobotURDataConfig(
+            repo_id="pick_v3_merge_crop_vid",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=20,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            train_time_rtc_max_delay=4,
+        ).get_freeze_filter(),
+        ema_decay=None,
+        batch_size=64,
+        num_train_steps=30_000,
+        log_interval=200,
+        save_interval=1000,
+        num_workers=12,
+        policy_metadata={
+            "prediction_horizon": 20,
+            "execution_horizon": 10,
+            "action_dim": ur_policy.UR_ACTION_DIM,
+            "action_representation": "tcp_relative_xyz_rot6d_absolute_gripper",
+            "control_frequency_hz": 20,
         },
     ),
     TrainConfig(
@@ -1021,6 +1060,7 @@ _CONFIGS = [
             "execution_horizon": 10,
             "action_dim": ur_policy.UR_ACTION_DIM,
             "action_representation": "tcp_relative_xyz_rot6d_absolute_gripper",
+            "control_frequency_hz": 20,
         },
     ),
     #
