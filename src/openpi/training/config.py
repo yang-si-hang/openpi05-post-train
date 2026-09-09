@@ -1003,7 +1003,7 @@ _CONFIGS = [
             train_time_rtc_max_delay=4,
         ),
         data=LeRobotURDataConfig(
-            repo_id="pick_v3_merge_crop_vid",
+            repo_id="pick_v4_merge_crop_vid",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
