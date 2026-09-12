@@ -1,4 +1,68 @@
-# openpi
+# OpenPI Post-Train
+
+> [!IMPORTANT]
+> This repository is a community fork of
+> [Physical Intelligence's OpenPI](https://github.com/Physical-Intelligence/openpi).
+> It keeps the upstream training and inference stack while adding practical
+> post-training features for LeRobot v3, RTC, Knowledge Insulation, and LoRA
+> checkpoint export. It is not an official Physical Intelligence repository.
+
+[中文说明](#与官方-openpi-的区别) · [English](#differences-from-upstream-openpi) ·
+[Upstream OpenPI](https://github.com/Physical-Intelligence/openpi)
+
+## 与官方 OpenPI 的区别
+
+本项目基于官方 OpenPI 仓库进行二次开发，主要增加了以下能力：
+
+| 功能 | 本项目新增内容 | 主要入口 |
+| --- | --- | --- |
+| LeRobot Dataset v3 | 兼容 LeRobot v3 / 0.4.x 的数据集元数据与任务信息读取；官方仓库原实现面向 v2 | [`data_loader.py`](src/openpi/training/data_loader.py) |
+| RTC 训练 | 为 π₀ / π₀.₅ 增加训练时 action conditioning，并提供 UR10e LoRA RTC 配置 `pi05_ur10e_lora_train_time_rtc` | [`pi0.py`](src/openpi/models/pi0.py)、[`config.py`](src/openpi/training/config.py) |
+| RTC 推理与测试 | 支持普通 RTC、VJP RTC、异步 action chunk 衔接，并可在相同 observation/noise 下比较 No RTC、RTC 和 RTC + VJP | [`rtc_guidance.py`](src/openpi/models/rtc_guidance.py)、[`test_rtc.py`](scripts/test_rtc.py)、[`remote_inference.md`](docs/remote_inference.md) |
+| Knowledge Insulation | 增加 π₀.₅ Knowledge Insulation 模型开关及 UR10e LoRA 训练配置 `pi05_ur10e_lora_ki_finetune` | [`pi0_config.py`](src/openpi/models/pi0_config.py)、[`config.py`](src/openpi/training/config.py) |
+| LoRA checkpoint 转换 | 将训练完成的 JAX π₀ / π₀.₅ LoRA 权重合并并转换为 OpenPI_RLinf checkpoint | [`jax_lora_to_openpi_rlinf.py`](examples/jax_lora_to_openpi_rlinf.py) |
+| UR10e 支持 | 增加 20 Hz TCP pose 数据变换、相对/绝对 action 转换以及 action chunk broker | [`ur_policy.py`](src/openpi/policies/ur_policy.py)、[`action_adapter.py`](examples/ur10e/action_adapter.py) |
+
+常用配置：
+
+```bash
+# 标准 π₀.₅ UR10e LoRA 微调
+uv run scripts/train.py pi05_ur10e_lora_finetune --exp-name=my_run
+
+# 带 Knowledge Insulation 的 LoRA 微调
+uv run scripts/train.py pi05_ur10e_lora_ki_finetune --exp-name=my_ki_run
+
+# 训练时 RTC
+uv run scripts/train.py pi05_ur10e_lora_train_time_rtc --exp-name=my_rtc_run
+
+# 比较 No RTC、RTC 与 RTC + VJP
+uv run python scripts/test_rtc.py --output-dir work_dirs/rtc_test
+```
+
+使用本地 LeRobot 数据集前，请设置数据根目录：
+
+```bash
+export HF_LEROBOT_HOME=/path/to/lerobot
+```
+
+如果这些改动对你的研究或机器人项目有帮助，欢迎给这个项目一个
+[Star](https://github.com/yang-si-hang/openpi05-post-train) ⭐。Issue、实验结果和改进建议也都非常欢迎。
+
+## Differences from upstream OpenPI
+
+This community fork adds LeRobot Dataset v3 loading, training-time and
+inference-time RTC (including VJP guidance and comparison tools), a π₀.₅
+Knowledge Insulation fine-tuning configuration, UR10e policy support, and a
+JAX LoRA-to-OpenPI_RLinf checkpoint converter. The table above links each
+feature to its implementation and runnable entry point.
+
+If this work is useful to you, please consider
+[starring the repository](https://github.com/yang-si-hang/openpi05-post-train) ⭐.
+Contributions, issues, and experiment reports are welcome.
+
+---
+
+## Upstream OpenPI README
 
 openpi holds open-source models and packages for robotics, published by the [Physical Intelligence team](https://www.physicalintelligence.company/).
 
