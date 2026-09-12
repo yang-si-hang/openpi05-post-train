@@ -106,12 +106,21 @@ class Observation(Generic[ArrayT]):
     # Token loss mask (for FAST autoregressive model).
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
 
+    # Knowledge-insulation FAST supervision (training only).
+    ki_tokens: at.Int[ArrayT, "*b kl"] | None = None
+    ki_token_mask: at.Bool[ArrayT, "*b kl"] | None = None
+    ki_ar_mask: at.Bool[ArrayT, "*b kl"] | None = None
+    ki_loss_mask: at.Bool[ArrayT, "*b kl"] | None = None
+
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
         """This method defines the mapping between unstructured data (i.e., nested dict) to the structured Observation format."""
         # Ensure that tokenized_prompt and tokenized_prompt_mask are provided together.
         if ("tokenized_prompt" in data) != ("tokenized_prompt_mask" in data):
             raise ValueError("tokenized_prompt and tokenized_prompt_mask must be provided together.")
+        ki_fields = ("ki_tokens", "ki_token_mask", "ki_ar_mask", "ki_loss_mask")
+        if any(name in data for name in ki_fields) and not all(name in data for name in ki_fields):
+            raise ValueError(f"Knowledge-insulation fields must be provided together: {ki_fields}")
         # If images are uint8, convert them to [-1, 1] float32.
         for key in data["image"]:
             if data["image"][key].dtype == np.uint8:
@@ -126,6 +135,10 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
+            ki_tokens=data.get("ki_tokens"),
+            ki_token_mask=data.get("ki_token_mask"),
+            ki_ar_mask=data.get("ki_ar_mask"),
+            ki_loss_mask=data.get("ki_loss_mask"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -205,6 +218,10 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        ki_tokens=observation.ki_tokens,
+        ki_token_mask=observation.ki_token_mask,
+        ki_ar_mask=observation.ki_ar_mask,
+        ki_loss_mask=observation.ki_loss_mask,
     )
 
 

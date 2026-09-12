@@ -132,22 +132,13 @@ def _normalize_lerobot_tasks(tasks) -> dict[int, str]:
 
     # LeRobot v3 / 0.4.x returns task metadata as a pandas DataFrame.
     if hasattr(tasks, "iterrows"):
-        return {
-            int(row["task_index"]): str(task_text)
-            for task_text, row in tasks.iterrows()
-        }
+        return {int(row["task_index"]): str(task_text) for task_text, row in tasks.iterrows()}
 
     # Keep compatibility with the older dict representation.
     if isinstance(tasks, dict):
-        return {
-            int(task_index): str(task_text)
-            for task_index, task_text in tasks.items()
-        }
+        return {int(task_index): str(task_text) for task_index, task_text in tasks.items()}
 
-    raise TypeError(
-        "Unsupported LeRobot task metadata type: "
-        f"{type(tasks).__name__}"
-    )
+    raise TypeError(f"Unsupported LeRobot task metadata type: {type(tasks).__name__}")
 
 
 def create_torch_dataset(
@@ -199,7 +190,13 @@ def create_rlds_dataset(
     )
 
 
-def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip_norm_stats: bool = False) -> Dataset:
+def transform_dataset(
+    dataset: Dataset,
+    data_config: _config.DataConfig,
+    *,
+    skip_norm_stats: bool = False,
+    training_model_transforms: _transforms.Group | None = None,
+) -> Dataset:
     """Transform the dataset by applying the data transforms."""
     norm_stats = {}
     if data_config.repo_id != "fake" and not skip_norm_stats:
@@ -216,6 +213,7 @@ def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip
             *data_config.repack_transforms.inputs,
             *data_config.data_transforms.inputs,
             _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+            *(training_model_transforms or _transforms.Group()).inputs,
             *data_config.model_transforms.inputs,
         ],
     )
@@ -227,6 +225,7 @@ def transform_iterable_dataset(
     *,
     skip_norm_stats: bool = False,
     is_batched: bool = False,
+    training_model_transforms: _transforms.Group | None = None,
 ) -> IterableDataset:
     """Transform the dataset by applying the data transforms."""
     norm_stats = {}
@@ -244,6 +243,7 @@ def transform_iterable_dataset(
             *data_config.repack_transforms.inputs,
             *data_config.data_transforms.inputs,
             _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+            *(training_model_transforms or _transforms.Group()).inputs,
             *data_config.model_transforms.inputs,
         ],
         is_batched=is_batched,
@@ -270,6 +270,7 @@ def create_data_loader(
         framework: The framework to use ("jax" or "pytorch").
     """
     data_config = config.data.create(config.assets_dirs, config.model)
+    training_model_transforms = config.data.create_training_model_transforms(config.model)
     logging.info(f"data_config: {data_config}")
 
     if data_config.rlds_data_dir is not None:
@@ -282,6 +283,7 @@ def create_data_loader(
             num_batches=num_batches,
             skip_norm_stats=skip_norm_stats,
             framework=framework,
+            training_model_transforms=training_model_transforms,
         )
     return create_torch_data_loader(
         data_config,
@@ -295,6 +297,7 @@ def create_data_loader(
         seed=config.seed,
         skip_norm_stats=skip_norm_stats,
         framework=framework,
+        training_model_transforms=training_model_transforms,
     )
 
 
@@ -311,6 +314,7 @@ def create_torch_data_loader(
     num_workers: int = 0,
     seed: int = 0,
     framework: str = "jax",
+    training_model_transforms: _transforms.Group | None = None,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training.
 
@@ -330,7 +334,12 @@ def create_torch_data_loader(
         seed: The seed to use for shuffling the data.
     """
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
-    dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
+    dataset = transform_dataset(
+        dataset,
+        data_config,
+        skip_norm_stats=skip_norm_stats,
+        training_model_transforms=training_model_transforms,
+    )
 
     # Use TorchDataLoader for both frameworks
     # For PyTorch DDP, create DistributedSampler and divide batch size by world size
@@ -377,6 +386,7 @@ def create_rlds_data_loader(
     shuffle: bool = False,
     num_batches: int | None = None,
     framework: str = "jax",
+    training_model_transforms: _transforms.Group | None = None,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create an RLDS data loader for training.
 
@@ -397,7 +407,13 @@ def create_rlds_data_loader(
     if framework == "pytorch":
         raise NotImplementedError("PyTorch RLDS data loader is not supported yet")
     dataset = create_rlds_dataset(data_config, action_horizon, batch_size, shuffle=shuffle)
-    dataset = transform_iterable_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats, is_batched=True)
+    dataset = transform_iterable_dataset(
+        dataset,
+        data_config,
+        skip_norm_stats=skip_norm_stats,
+        is_batched=True,
+        training_model_transforms=training_model_transforms,
+    )
 
     data_loader = RLDSDataLoader(
         dataset,

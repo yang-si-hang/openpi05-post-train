@@ -188,6 +188,11 @@ class DataConfigFactory(abc.ABC):
             use_quantile_norm=model_config.model_type != ModelType.PI0,
         )
 
+    def create_training_model_transforms(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
+        """Construct transforms that must exist only in the training input pipeline."""
+        del model_config
+        return _transforms.Group()
+
     def _load_norm_stats(self, assets_dir: epath.Path, asset_id: str | None) -> dict[str, _transforms.NormStats] | None:
         if asset_id is None:
             return None
@@ -466,6 +471,17 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
 @dataclasses.dataclass(frozen=True)
 class LeRobotURDataConfig(DataConfigFactory):
     """Data configuration for 20 Hz UR TCP-pose datasets in LeRobot format."""
+
+    @override
+    def create_training_model_transforms(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
+        if not isinstance(model_config, pi0_config.Pi0Config) or not model_config.knowledge_insulation:
+            return _transforms.Group()
+        tokenizer = _tokenizer.FASTTokenizer(
+            model_config.ki_max_token_len,
+            model_config.ki_fast_tokenizer_path,
+            revision=model_config.ki_fast_tokenizer_revision,
+        )
+        return _transforms.Group(inputs=[_transforms.TokenizeKnowledgeInsulation(tokenizer)])
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -992,6 +1008,52 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
+        name="pi05_ur10e_lora_ki_finetune",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=20,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            knowledge_insulation=True,
+            ki_max_token_len=256,
+            ki_fast_tokenizer_revision="ec4d7aa71691cac0b8bed6942be45684db2110f4",
+        ),
+        data=LeRobotURDataConfig(
+            repo_id="pick_v4_merge_crop_vid",
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                assets_dir=(
+                    "/app/data/openpi-checkpoints/pi05_ur10e_lora_train_time_rtc/pick_20260829_104436/25000/assets"
+                ),
+                asset_id="pick_v4_merge_crop_vid",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=20,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            knowledge_insulation=True,
+        ).get_freeze_filter(),
+        ema_decay=None,
+        batch_size=64,
+        num_train_steps=30_000,
+        log_interval=200,
+        save_interval=1000,
+        num_workers=12,
+        fsdp_devices=1,
+        policy_metadata={
+            "prediction_horizon": 20,
+            "execution_horizon": 10,
+            "action_dim": ur_policy.UR_ACTION_DIM,
+            "action_representation": "tcp_relative_xyz_rot6d_absolute_gripper",
+            "control_frequency_hz": 20,
+        },
+    ),
+    TrainConfig(
         name="pi05_ur10e_lora_train_time_rtc",
         model=pi0_config.Pi0Config(
             pi05=True,
@@ -1054,7 +1116,7 @@ _CONFIGS = [
         save_interval=1000,
         keep_period=3000,
         num_workers=12,
-        fsdp_devices=2,     # model sharing across 2 devices
+        fsdp_devices=2,  # model sharing across 2 devices
         policy_metadata={
             "prediction_horizon": 20,
             "execution_horizon": 10,

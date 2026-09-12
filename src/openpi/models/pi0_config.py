@@ -1,4 +1,5 @@
 import dataclasses
+import math
 from typing import TYPE_CHECKING
 
 import flax.nnx as nnx
@@ -38,6 +39,13 @@ class Pi0Config(_model.BaseModelConfig):
     # sampling behavior.
     train_time_rtc_max_delay: int = 0
 
+    knowledge_insulation: bool = False
+    ki_max_token_len: int = 256
+    ki_fast_tokenizer_path: str = "physical-intelligence/fast"
+    ki_fast_tokenizer_revision: str | None = None
+    ki_fast_loss_weight: float = 1.0
+    ki_flow_loss_weight: float = 1.0
+
     pytorch_compile_mode: str | None = "max-autotune"
 
     def __post_init__(self):
@@ -52,6 +60,17 @@ class Pi0Config(_model.BaseModelConfig):
                 raise ValueError("Training-time RTC is only supported for Pi0.5")
             if self.train_time_rtc_max_delay >= self.action_horizon:
                 raise ValueError("train_time_rtc_max_delay must be smaller than action_horizon")
+        if self.knowledge_insulation:
+            if not self.pi05:
+                raise ValueError("Knowledge insulation is only supported for Pi0.5")
+            if self.ki_max_token_len < 2:
+                raise ValueError("ki_max_token_len must be at least 2")
+            for name, value in (
+                ("ki_fast_loss_weight", self.ki_fast_loss_weight),
+                ("ki_flow_loss_weight", self.ki_flow_loss_weight),
+            ):
+                if not math.isfinite(value) or value <= 0:
+                    raise ValueError(f"{name} must be finite and positive")
         if self.pytorch_compile_mode is not None:
             assert self.pytorch_compile_mode in [
                 "default",
@@ -93,6 +112,18 @@ class Pi0Config(_model.BaseModelConfig):
                 state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
                 tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
                 tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+                ki_tokens=jax.ShapeDtypeStruct([batch_size, self.ki_max_token_len], jnp.int32)
+                if self.knowledge_insulation
+                else None,
+                ki_token_mask=jax.ShapeDtypeStruct([batch_size, self.ki_max_token_len], jnp.bool_)
+                if self.knowledge_insulation
+                else None,
+                ki_ar_mask=jax.ShapeDtypeStruct([batch_size, self.ki_max_token_len], jnp.bool_)
+                if self.knowledge_insulation
+                else None,
+                ki_loss_mask=jax.ShapeDtypeStruct([batch_size, self.ki_max_token_len], jnp.bool_)
+                if self.knowledge_insulation
+                else None,
             )
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 

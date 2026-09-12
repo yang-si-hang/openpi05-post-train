@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import os
 
@@ -48,8 +49,22 @@ class PaligemmaTokenizer:
         return np.asarray(tokens), np.asarray(mask)
 
 
+@dataclasses.dataclass(frozen=True)
+class FASTTokenizationMetadata:
+    untruncated_length: int
+    was_truncated: bool
+    prefix_length: int
+    postfix_length: int
+    fast_action_code_count: int
+
+
 class FASTTokenizer:
-    def __init__(self, max_len: int = 256, fast_tokenizer_path: str = "physical-intelligence/fast"):
+    def __init__(
+        self,
+        max_len: int = 256,
+        fast_tokenizer_path: str = "physical-intelligence/fast",
+        revision: str | None = None,
+    ):
         self._max_len = max_len
 
         # Download base PaliGemma tokenizer
@@ -58,12 +73,20 @@ class FASTTokenizer:
             self._paligemma_tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
 
         # Instantiate FAST tokenizer
-        self._fast_tokenizer = AutoProcessor.from_pretrained(fast_tokenizer_path, trust_remote_code=True)
+        self._fast_tokenizer = AutoProcessor.from_pretrained(
+            fast_tokenizer_path, trust_remote_code=True, revision=revision
+        )
         self._fast_skip_tokens = 128  # Skip last 128 tokens in PaliGemma vocab since they are special tokens
 
     def tokenize(
         self, prompt: str, state: np.ndarray, actions: np.ndarray | None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        result, _ = self.tokenize_with_metadata(prompt, state, actions)
+        return result
+
+    def tokenize_with_metadata(
+        self, prompt: str, state: np.ndarray, actions: np.ndarray | None
+    ) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], FASTTokenizationMetadata]:
         cleaned_text = prompt.lower().strip().replace("_", " ")
 
         # Convention: state gets discretized into 256 discrete bins (assumed range after normalization: [-1, 1])
@@ -74,10 +97,12 @@ class FASTTokenizer:
         prefix = f"Task: {cleaned_text}, State: {state_str};\n"
         prefix_tokens = self._paligemma_tokenizer.encode(prefix, add_bos=True)
 
+        action_code_count = 0
         if actions is not None:
             # Tokenize actions with FAST tokenizer --> map to last tokens in PaliGemma vocab
             action_tokens = self._fast_tokenizer(actions[None])[0]
             action_tokens_in_pg = self._act_tokens_to_paligemma_tokens(action_tokens)
+            action_code_count = len(action_tokens_in_pg)
 
             # Convention: postfix contains 'Action:' followed by FAST tokens, followed by '|'
             postfix_tokens = (
@@ -97,6 +122,13 @@ class FASTTokenizer:
 
         # Pad tokens to max length
         tokens_len = len(tokens)
+        metadata = FASTTokenizationMetadata(
+            untruncated_length=tokens_len,
+            was_truncated=tokens_len > self._max_len,
+            prefix_length=len(prefix_tokens),
+            postfix_length=len(postfix_tokens),
+            fast_action_code_count=action_code_count,
+        )
         if tokens_len < self._max_len:
             padding = [False] * (self._max_len - tokens_len)
             tokens = tokens + padding
@@ -114,7 +146,12 @@ class FASTTokenizer:
             ar_mask = ar_mask[: self._max_len]
             loss_mask = loss_mask[: self._max_len]
 
-        return np.asarray(tokens), np.asarray(token_mask), np.asarray(ar_mask), np.asarray(loss_mask)
+        return (
+            np.asarray(tokens),
+            np.asarray(token_mask),
+            np.asarray(ar_mask),
+            np.asarray(loss_mask),
+        ), metadata
 
     def extract_actions(self, tokens: np.ndarray, action_horizon: int, action_dim: int) -> np.ndarray:
         # Decode predicted output tokens
