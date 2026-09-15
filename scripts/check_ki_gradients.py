@@ -39,7 +39,7 @@ def _group(path: tuple[object, ...]) -> str:
 
 def _report(label: str, grads: nnx.State) -> dict[str, float]:
     grouped: dict[str, list[object]] = {}
-    for path, variable in grads.flat_state():
+    for path, variable in grads.flat_state().items():
         grouped.setdefault(_group(path), []).append(variable.value)
         if _group(path) == "other_trainable":
             print(f"UNCLASSIFIED {path}")
@@ -56,19 +56,37 @@ def main(args: Args) -> None:
     config = dataclasses.replace(_config.get_config(args.config_name), batch_size=1, num_workers=0)
     loader = _data_loader.create_data_loader(config, num_batches=1)
     observation, actions = next(iter(loader))
-    abstract = nnx.eval_shape(config.model.create, jax.random.key(0))
-    params = config.weight_loader.load(nnx.state(abstract).to_pure_dict())
-    model = config.model.load(params)
+    # The base checkpoint does not contain the LoRA parameters introduced by
+    # this config. Start from a real model so the weight loader can preserve
+    # concrete initialized arrays for every missing LoRA leaf. Using an
+    # eval_shape model here would leave ShapeDtypeStruct values in the model,
+    # which cannot participate in value_and_grad.
+    model = config.model.create(jax.random.key(0))
+    params = config.weight_loader.load(nnx.state(model).to_pure_dict())
+    if any(isinstance(value, jax.ShapeDtypeStruct) for value in jax.tree.leaves(params)):
+        raise RuntimeError("Weight loading left abstract ShapeDtypeStruct parameters in the model")
+    graphdef, state = nnx.split(model)
+    state.replace_by_pure_dict(params)
+    model = nnx.merge(graphdef, state)
     model.train()
     processed = _model.preprocess_observation(jax.random.key(1), observation, train=True)
 
     def fast_loss(module: _pi0.Pi0):
-        return jnp.mean(module._compute_fast_loss(processed)[0])  # noqa: SLF001
+        encoded_images = module._encode_images(processed)  # noqa: SLF001
+        return jnp.mean(
+            module._compute_fast_loss(processed, encoded_images=encoded_images)[0]  # noqa: SLF001
+        )
 
     def flow_loss(module: _pi0.Pi0):
+        encoded_images = module._encode_images(processed)  # noqa: SLF001
         return jnp.mean(
             module._compute_flow_loss_preprocessed(  # noqa: SLF001
-                jax.random.key(2), jax.random.key(3), None, processed, actions
+                jax.random.key(2),
+                jax.random.key(3),
+                None,
+                processed,
+                actions,
+                encoded_images=encoded_images,
             )
         )
 

@@ -1,4 +1,5 @@
 import logging
+from typing import NamedTuple
 
 import einops
 import flax.nnx as nnx
@@ -15,6 +16,14 @@ import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
 
 logger = logging.getLogger("openpi")
+
+
+class EncodedImages(NamedTuple):
+    """Concatenated image tokens and masks shared by Pi0 model branches."""
+
+    tokens: jax.Array
+    token_mask: jax.Array
+    ar_mask: jax.Array
 
 
 def sample_train_time_rtc_delay(rng, batch_shape: tuple[int, ...], max_delay: int):
@@ -127,27 +136,35 @@ class Pi0(_model.BaseModel):
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
 
-    @at.typecheck
-    def embed_prefix(
-        self, obs: _model.Observation
-    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
-        input_mask = []
-        ar_mask = []
+    def _encode_images(self, obs: _model.Observation) -> EncodedImages:
+        """Encode and concatenate every camera while preserving the existing ordering."""
         tokens = []
-        # embed images
+        input_masks = []
+        ar_masks = []
         for name in obs.images:
             image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
-
             tokens.append(image_tokens)
-            input_mask.append(
-                einops.repeat(
-                    obs.image_masks[name],
-                    "b -> b s",
-                    s=image_tokens.shape[1],
-                )
-            )
-            # image tokens attend to each other
-            ar_mask += [False] * image_tokens.shape[1]
+            input_masks.append(einops.repeat(obs.image_masks[name], "b -> b s", s=image_tokens.shape[1]))
+            ar_masks.append(jnp.zeros((image_tokens.shape[1],), dtype=jnp.bool_))
+
+        encoded = EncodedImages(
+            tokens=jnp.concatenate(tokens, axis=1),
+            token_mask=jnp.concatenate(input_masks, axis=1),
+            ar_mask=jnp.concatenate(ar_masks, axis=0),
+        )
+        assert encoded.tokens.shape[:2] == encoded.token_mask.shape
+        assert encoded.ar_mask.shape == (encoded.tokens.shape[1],)
+        return encoded
+
+    @at.typecheck
+    def embed_prefix(
+        self, obs: _model.Observation, *, encoded_images: EncodedImages | None = None
+    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
+        if encoded_images is None:
+            encoded_images = self._encode_images(obs)
+        input_mask = [encoded_images.token_mask]
+        ar_mask = [encoded_images.ar_mask]
+        tokens = [encoded_images.tokens]
 
         # add language (aka tokenized inputs)
         if obs.tokenized_prompt is not None:
@@ -155,29 +172,29 @@ class Pi0(_model.BaseModel):
             tokens.append(tokenized_inputs)
             input_mask.append(obs.tokenized_prompt_mask)
             # full attention between image and language inputs
-            ar_mask += [False] * tokenized_inputs.shape[1]
+            ar_mask.append(jnp.zeros((tokenized_inputs.shape[1],), dtype=jnp.bool_))
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
-        ar_mask = jnp.array(ar_mask)
+        ar_mask = jnp.concatenate(ar_mask, axis=0)
         return tokens, input_mask, ar_mask
 
-    def embed_ki_inputs(self, obs: _model.Observation):
+    def embed_ki_inputs(self, obs: _model.Observation, *, encoded_images: EncodedImages | None = None):
         """Embed images and fixed-length FAST supervision tokens."""
         if any(x is None for x in (obs.ki_tokens, obs.ki_token_mask, obs.ki_ar_mask, obs.ki_loss_mask)):
             raise ValueError("KI observation fields must all be present")
-        tokens, masks, ar_masks = [], [], []
-        for name in obs.images:
-            image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
-            tokens.append(image_tokens)
-            masks.append(einops.repeat(obs.image_masks[name], "b -> b s", s=image_tokens.shape[1]))
-            ar_masks.append(jnp.zeros(image_tokens.shape[:2], dtype=jnp.bool_))
-        tokens.append(self.PaliGemma.llm(obs.ki_tokens, method="embed"))
-        masks.append(obs.ki_token_mask)
-        ar_masks.append(obs.ki_ar_mask)
-        return jnp.concatenate(tokens, axis=1), jnp.concatenate(masks, axis=1), jnp.concatenate(ar_masks, axis=1)
+        if encoded_images is None:
+            encoded_images = self._encode_images(obs)
+        image_ar_mask = jnp.broadcast_to(encoded_images.ar_mask[None, :], encoded_images.token_mask.shape)
+        return (
+            jnp.concatenate([encoded_images.tokens, self.PaliGemma.llm(obs.ki_tokens, method="embed")], axis=1),
+            jnp.concatenate([encoded_images.token_mask, obs.ki_token_mask], axis=1),
+            jnp.concatenate([image_ar_mask, obs.ki_ar_mask], axis=1),
+        )
 
-    def _compute_fast_loss(self, observation: _model.Observation):
-        full_embeddings, full_input_mask, full_ar_mask = self.embed_ki_inputs(observation)
+    def _compute_fast_loss(self, observation: _model.Observation, *, encoded_images: EncodedImages | None = None):
+        full_embeddings, full_input_mask, full_ar_mask = self.embed_ki_inputs(
+            observation, encoded_images=encoded_images
+        )
         full_attn_mask = make_attn_mask(full_input_mask, full_ar_mask)
         full_positions = jnp.cumsum(full_input_mask, axis=1) - 1
         model_embeddings = full_embeddings[:, :-1]
@@ -305,7 +322,9 @@ class Pi0(_model.BaseModel):
 
         return normalize_postfix_loss(loss, action_prefix_mask)
 
-    def _compute_flow_loss_preprocessed(self, noise_rng, time_rng, delay_rng, observation, actions):
+    def _compute_flow_loss_preprocessed(
+        self, noise_rng, time_rng, delay_rng, observation, actions, *, encoded_images: EncodedImages | None = None
+    ):
         batch_shape = actions.shape[:-2]
         noise = jax.random.normal(noise_rng, actions.shape)
         time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
@@ -316,7 +335,7 @@ class Pi0(_model.BaseModel):
             action_prefix_mask = None
             x_t = time[..., None, None] * noise + (1 - time[..., None, None]) * actions
         u_t = noise - actions
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation, encoded_images=encoded_images)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
         _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=prefix_positions)
@@ -355,8 +374,11 @@ class Pi0(_model.BaseModel):
             preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
             delay_rng = None
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
-        fast, correct, target_count = self._compute_fast_loss(observation)
-        flow = self._compute_flow_loss_preprocessed(noise_rng, time_rng, delay_rng, observation, actions)
+        encoded_images = self._encode_images(observation)
+        fast, correct, target_count = self._compute_fast_loss(observation, encoded_images=encoded_images)
+        flow = self._compute_flow_loss_preprocessed(
+            noise_rng, time_rng, delay_rng, observation, actions, encoded_images=encoded_images
+        )
         fast_scalar, flow_scalar = jnp.mean(fast), jnp.mean(flow)
         total = self.ki_fast_loss_weight * fast_scalar + self.ki_flow_loss_weight * flow_scalar
         return total, {
