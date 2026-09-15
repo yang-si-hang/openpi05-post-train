@@ -1,8 +1,7 @@
 """
 cd /app
 
-
-export EXP_NAME="pick_$(date +%Y%m%d_%H%M%S)"
+export EXP_NAME="plug_$(date +%Y%m%d_%H%M%S)"
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
 CUDA_VISIBLE_DEVICES=0,1 \
 uv run --frozen scripts/train.py \
@@ -286,7 +285,20 @@ def main(config: _config.TrainConfig):
                     jnp.sum(stacked_infos["fast_correct_count"])
                     / jnp.maximum(jnp.sum(stacked_infos["fast_target_token_count"]), 1)
                 )
-            info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
+            # info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
+            # import sys
+
+            # print("DEBUG reduced_info:", file=sys.stderr, flush=True)
+            # for key, value in reduced_info.items():
+            #     print(
+            #         f"  {key}: type={type(value)!r}, value={value!r}",
+            #         file=sys.stderr,
+            #         flush=True,
+            #     )
+            info_str = ", ".join(
+                f"{k}={float(v):.4f}" if np.issubdtype(np.asarray(v).dtype, np.number) else f"{k}={v}"
+                for k, v in reduced_info.items()
+            )
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
             infos = []

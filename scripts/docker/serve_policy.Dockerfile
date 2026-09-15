@@ -28,6 +28,7 @@ RUN apt-get update \
            linux-headers-generic \
            build-essential \
            clang \
+           nethogs \
     && rm -rf /var/lib/apt/lists/*
 
 # Default tmux configuration for the root user.

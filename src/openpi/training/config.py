@@ -975,20 +975,20 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(
             pi05=True,
             action_dim=32,
-            action_horizon=20,
+            action_horizon=30,
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
         ),
         # export HF_LEROBOT_HOME=/app/data/lerobot_data
         data=LeRobotURDataConfig(
-            repo_id="pick_v4_merge_crop_vid",
+            repo_id="plug_v1_merge_crop_vid",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         freeze_filter=pi0_config.Pi0Config(
             pi05=True,
             action_dim=32,
-            action_horizon=20,
+            action_horizon=30,
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
         ).get_freeze_filter(),
@@ -997,14 +997,15 @@ _CONFIGS = [
         num_train_steps=30_000,
         log_interval=200,
         save_interval=1000,
+        keep_period=5000,
         num_workers=12,
         fsdp_devices=1,
         policy_metadata={
-            "prediction_horizon": 20,
-            "execution_horizon": 10,
+            "prediction_horizon": 30,
+            "execution_horizon": 15,
             "action_dim": ur_policy.UR_ACTION_DIM,
             "action_representation": "tcp_relative_xyz_rot6d_absolute_gripper",
-            "control_frequency_hz": 20,
+            "control_frequency_hz": 30,
         },
     ),
     TrainConfig(
@@ -1012,7 +1013,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(
             pi05=True,
             action_dim=32,
-            action_horizon=20,
+            action_horizon=30,
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
             knowledge_insulation=True,
@@ -1020,20 +1021,20 @@ _CONFIGS = [
             ki_fast_tokenizer_revision="ec4d7aa71691cac0b8bed6942be45684db2110f4",
         ),
         data=LeRobotURDataConfig(
-            repo_id="pick_v4_merge_crop_vid",
+            repo_id="plug_v1_merge_crop_vid",
             base_config=DataConfig(prompt_from_task=True),
-            assets=AssetsConfig(
-                assets_dir=(
-                    "/app/data/openpi-checkpoints/pi05_ur10e_lora_train_time_rtc/pick_20260829_104436/25000/assets"
-                ),
-                asset_id="pick_v4_merge_crop_vid",
-            ),
+            # assets=AssetsConfig(
+            #     assets_dir=(
+            #         "/app/data/openpi-checkpoints/pi05_ur10e_lora_train_time_rtc/pick_20260829_104436/25000/assets"
+            #     ),
+            #     asset_id="pick_v4_merge_crop_vid",
+            # ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         freeze_filter=pi0_config.Pi0Config(
             pi05=True,
             action_dim=32,
-            action_horizon=20,
+            action_horizon=30,
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
             knowledge_insulation=True,
@@ -1043,14 +1044,15 @@ _CONFIGS = [
         num_train_steps=30_000,
         log_interval=200,
         save_interval=1000,
+        keep_period=5000,
         num_workers=12,
         fsdp_devices=1,
         policy_metadata={
-            "prediction_horizon": 20,
-            "execution_horizon": 10,
+            "prediction_horizon": 30,
+            "execution_horizon": 15,
             "action_dim": ur_policy.UR_ACTION_DIM,
             "action_representation": "tcp_relative_xyz_rot6d_absolute_gripper",
-            "control_frequency_hz": 20,
+            "control_frequency_hz": 30,
         },
     ),
     TrainConfig(
@@ -1058,24 +1060,24 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(
             pi05=True,
             action_dim=32,
-            action_horizon=20,
+            action_horizon=30,
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
-            # Sample an integer delay uniformly from the closed interval [0, 4].
-            train_time_rtc_max_delay=4,
+            # Sample an integer delay uniformly from the closed interval [0, 6].
+            train_time_rtc_max_delay=6,
         ),
         data=LeRobotURDataConfig(
-            repo_id="pick_v4_merge_crop_vid",
+            repo_id="plug_v1_merge_crop_vid",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         freeze_filter=pi0_config.Pi0Config(
             pi05=True,
             action_dim=32,
-            action_horizon=20,
+            action_horizon=30,
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
-            train_time_rtc_max_delay=4,
+            train_time_rtc_max_delay=6,
         ).get_freeze_filter(),
         ema_decay=None,
         batch_size=64,
@@ -1084,11 +1086,11 @@ _CONFIGS = [
         save_interval=1000,
         num_workers=12,
         policy_metadata={
-            "prediction_horizon": 20,
-            "execution_horizon": 10,
+            "prediction_horizon": 30,
+            "execution_horizon": 15,
             "action_dim": ur_policy.UR_ACTION_DIM,
             "action_representation": "tcp_relative_xyz_rot6d_absolute_gripper",
-            "control_frequency_hz": 20,
+            "control_frequency_hz": 30,
         },
     ),
     TrainConfig(
