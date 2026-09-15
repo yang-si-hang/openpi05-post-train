@@ -199,10 +199,17 @@ def train_step(
             lambda _, x: x.value.ndim > 1,
         ),
     )
+    # Computing the kernel norm scans most matrix parameters, including frozen
+    # backbone weights. Only do that work on steps where the metric is logged.
+    param_norm = jax.lax.cond(
+        state.step % config.log_interval == 0,
+        lambda: optax.global_norm(kernel_params),
+        lambda: jnp.asarray(0.0, dtype=loss.dtype),
+    )
     info = {
         "loss": loss,
         "grad_norm": optax.global_norm(grads),
-        "param_norm": optax.global_norm(kernel_params),
+        "param_norm": param_norm,
         **aux,
     }
     return new_state, info
@@ -280,6 +287,9 @@ def main(config: _config.TrainConfig):
         if step % config.log_interval == 0:
             stacked_infos = common_utils.stack_forest(infos)
             reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+            # param_norm is computed only on the current logging step; the
+            # other entries in this interval are zero-valued placeholders.
+            reduced_info["param_norm"] = jax.device_get(jnp.sum(stacked_infos["param_norm"]))
             if "fast_correct_count" in stacked_infos:
                 reduced_info["fast_token_accuracy"] = jax.device_get(
                     jnp.sum(stacked_infos["fast_correct_count"])
