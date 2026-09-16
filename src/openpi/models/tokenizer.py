@@ -58,6 +58,14 @@ class FASTTokenizationMetadata:
     fast_action_code_count: int
 
 
+@dataclasses.dataclass(frozen=True)
+class FASTActionTokenizationMetadata:
+    """Metadata for a KI action-only FAST target sequence."""
+
+    unpadded_length: int
+    fast_action_code_count: int
+
+
 class FASTTokenizer:
     def __init__(
         self,
@@ -100,8 +108,7 @@ class FASTTokenizer:
         action_code_count = 0
         if actions is not None:
             # Tokenize actions with FAST tokenizer --> map to last tokens in PaliGemma vocab
-            action_tokens = self._fast_tokenizer(actions[None])[0]
-            action_tokens_in_pg = self._act_tokens_to_paligemma_tokens(action_tokens)
+            action_tokens_in_pg = self._encode_actions_to_paligemma_ids(actions)
             action_code_count = len(action_tokens_in_pg)
 
             # Convention: postfix contains 'Action:' followed by FAST tokens, followed by '|'
@@ -153,6 +160,35 @@ class FASTTokenizer:
             np.asarray(loss_mask),
         ), metadata
 
+    def tokenize_action_suffix(
+        self, actions: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, FASTActionTokenizationMetadata]:
+        """Tokenize actions into KI targets: FAST codes followed by ``|`` and EOS.
+
+        Unlike ``tokenize``, this method deliberately excludes BOS, prompt, state,
+        and ``Action:``. It also fails on overflow so KI supervision can never be
+        changed by silent truncation.
+        """
+        action_tokens_in_pg = self._encode_actions_to_paligemma_ids(actions)
+        terminator_tokens = self._paligemma_tokenizer.encode("|", add_eos=True)
+        tokens = action_tokens_in_pg.tolist() + terminator_tokens
+        if len(tokens) > self._max_len:
+            raise ValueError(
+                f"FAST action suffix length ({len(tokens)}) exceeds max length ({self._max_len}); "
+                "refusing to truncate KI targets"
+            )
+
+        metadata = FASTActionTokenizationMetadata(
+            unpadded_length=len(tokens),
+            fast_action_code_count=len(action_tokens_in_pg),
+        )
+        padding_length = self._max_len - len(tokens)
+        return (
+            np.asarray(tokens + [0] * padding_length, dtype=np.int32),
+            np.asarray([True] * len(tokens) + [False] * padding_length, dtype=np.bool_),
+            metadata,
+        )
+
     def extract_actions(self, tokens: np.ndarray, action_horizon: int, action_dim: int) -> np.ndarray:
         # Decode predicted output tokens
         decoded_tokens = self._paligemma_tokenizer.decode(tokens.tolist())
@@ -174,6 +210,11 @@ class FASTTokenizer:
         if isinstance(tokens, list):
             tokens = np.array(tokens)
         return self._paligemma_tokenizer.vocab_size() - 1 - self._fast_skip_tokens - tokens
+
+    def _encode_actions_to_paligemma_ids(self, actions: np.ndarray) -> np.ndarray:
+        """Use the canonical FAST processor and vocabulary mapping for actions."""
+        action_tokens = self._fast_tokenizer(actions[None])[0]
+        return self._act_tokens_to_paligemma_tokens(action_tokens)
 
 
 ###########################################################################

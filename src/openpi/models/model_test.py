@@ -141,6 +141,15 @@ def test_pi05_train_time_rtc_hard_prefix_sampling():
     assert np.all(np.isfinite(result))
 
     plain = sample_actions(jax.random.key(4), obs, num_steps=2, noise=noise)
+    explicit_zero_prefix = sample_actions(
+        jax.random.key(4),
+        obs,
+        num_steps=2,
+        noise=noise,
+        rtc_prev_actions=jnp.zeros_like(prev_actions),
+        rtc_prefix_len=jnp.zeros((2,), dtype=jnp.int32),
+        rtc_use_vjp=False,
+    )
     zero_prefix = sample_actions(
         jax.random.key(4),
         obs,
@@ -150,7 +159,12 @@ def test_pi05_train_time_rtc_hard_prefix_sampling():
         rtc_prefix_len=jnp.zeros((2,), dtype=jnp.int32),
         rtc_use_vjp=False,
     )
-    np.testing.assert_array_equal(zero_prefix, plain)
+    # The omitted-argument compatibility path and the fixed-shape RTC envelope
+    # compile separately, so their BF16 computations need not be bit-identical.
+    np.testing.assert_allclose(explicit_zero_prefix, plain, rtol=1e-2, atol=1e-2)
+    # With the same JIT signature, a zero-length prefix must make previous
+    # actions completely irrelevant.
+    np.testing.assert_array_equal(zero_prefix, explicit_zero_prefix)
 
 
 def test_train_time_rtc_preserves_parameter_tree_and_adarms_supports_token_conditioning():

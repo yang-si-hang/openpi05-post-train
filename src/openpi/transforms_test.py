@@ -85,6 +85,26 @@ def test_tokenize_no_prompt():
         transform({})
 
 
+def test_tokenize_knowledge_insulation_uses_action_only_api():
+    class FakeTokenizer:
+        def tokenize_action_suffix(self, actions):
+            np.testing.assert_array_equal(actions, np.asarray([[1.0, 2.0]], dtype=np.float32))
+            return np.asarray([7, 8, 0]), np.asarray([True, True, False]), object()
+
+    transform = _transforms.TokenizeKnowledgeInsulation(FakeTokenizer())
+    data = transform(
+        {
+            "prompt": "Prompt remains available for the shared tokenizer",
+            "state": np.asarray([3.0]),
+            "actions": np.asarray([[1.0, 2.0]], dtype=np.float32),
+        }
+    )
+
+    np.testing.assert_array_equal(data["ki_action_tokens"], np.asarray([7, 8, 0]))
+    np.testing.assert_array_equal(data["ki_action_token_mask"], np.asarray([True, True, False]))
+    assert data["prompt"] == "Prompt remains available for the shared tokenizer"
+
+
 def test_transform_dict():
     # Rename and remove keys.
     input = {"a": {"b": 1, "c": 2}}

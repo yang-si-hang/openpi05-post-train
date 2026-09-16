@@ -32,12 +32,11 @@ def main(args: Args) -> None:
     for _batch_index, (obs, actions) in enumerate(loader):
         jax.block_until_ready(actions)
         remaining = min(actions.shape[0], count - seen)
-        token_masks = np.asarray(obs.ki_token_mask[:remaining])
-        loss_masks = np.asarray(obs.ki_loss_mask[:remaining])
-        lengths.extend(token_masks.sum(axis=1).astype(int).tolist())
-        targets.extend(loss_masks[:, 1:].sum(axis=1).astype(int).tolist())
-        zero_masks += int(np.sum(~loss_masks[:, 1:].any(axis=1)))
-        invalid_masks += int(np.sum(loss_masks & ~token_masks))
+        target_masks = np.asarray(obs.ki_action_token_mask[:remaining])
+        lengths.extend(target_masks.sum(axis=1).astype(int).tolist())
+        targets.extend(target_masks.sum(axis=1).astype(int).tolist())
+        zero_masks += int(np.sum(~target_masks.any(axis=1)))
+        invalid_masks += int(np.sum(np.diff(target_masks.astype(np.int8), axis=1) > 0))
         nonfinite += int(
             not (
                 np.isfinite(np.asarray(obs.state[:remaining])).all()
@@ -47,7 +46,7 @@ def main(args: Args) -> None:
         for offset in range(min(remaining, max(args.num_examples - seen, 0))):
             print(
                 f"example={seen + offset} length={lengths[seen + offset]} targets={targets[seen + offset]} "
-                f"boundary={np.flatnonzero(loss_masks[offset])[:3]}"
+                f"boundary={np.flatnonzero(target_masks[offset])[-3:]}"
             )
         seen += remaining
         if seen >= count:
@@ -56,7 +55,7 @@ def main(args: Args) -> None:
     target_values = np.asarray(targets)
     print(
         "samples={} token_length_mean/p90/p95/p99/max={:.2f}/{:.2f}/{:.2f}/{:.2f}/{} "
-        "postfix_targets_mean/min/max={:.2f}/{}/{} zero_masks={} invalid_masks={} nonfinite={}".format(
+        "action_targets_mean/min/max={:.2f}/{}/{} zero_masks={} non_left_padded_masks={} nonfinite={}".format(
             count,
             values.mean(),
             *np.percentile(values, [90, 95, 99]),

@@ -178,38 +178,53 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.concatenate(ar_mask, axis=0)
         return tokens, input_mask, ar_mask
 
-    def embed_ki_inputs(self, obs: _model.Observation, *, encoded_images: EncodedImages | None = None):
-        """Embed images and fixed-length FAST supervision tokens."""
-        if any(x is None for x in (obs.ki_tokens, obs.ki_token_mask, obs.ki_ar_mask, obs.ki_loss_mask)):
-            raise ValueError("KI observation fields must all be present")
-        if encoded_images is None:
-            encoded_images = self._encode_images(obs)
-        image_ar_mask = jnp.broadcast_to(encoded_images.ar_mask[None, :], encoded_images.token_mask.shape)
-        return (
-            jnp.concatenate([encoded_images.tokens, self.PaliGemma.llm(obs.ki_tokens, method="embed")], axis=1),
-            jnp.concatenate([encoded_images.token_mask, obs.ki_token_mask], axis=1),
-            jnp.concatenate([image_ar_mask, obs.ki_ar_mask], axis=1),
+    def _forward_prefix(self, observation: _model.Observation, *, encoded_images: EncodedImages | None = None):
+        """Run the standard Pi0.5 image + Task + State + Action prefix once."""
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation, encoded_images=encoded_images)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        (prefix_out, _), kv_cache = self.PaliGemma.llm(
+            [prefix_tokens, None], mask=prefix_attn_mask, positions=prefix_positions
+        )
+        return prefix_out, prefix_mask, kv_cache
+
+    def _compute_fast_loss_from_shared_prefix(
+        self, observation: _model.Observation, *, prefix_out, prefix_mask, kv_cache
+    ):
+        """Compute action-only FAST CE from the differentiable shared prefix."""
+        if observation.ki_action_tokens is None or observation.ki_action_token_mask is None:
+            raise ValueError("KI action tokens and token mask must both be present")
+
+        targets = observation.ki_action_tokens
+        loss_mask = observation.ki_action_token_mask
+        suffix_input_ids = targets[:, :-1]
+        suffix_input_mask = loss_mask[:, :-1]
+        suffix_embeddings = self.PaliGemma.llm(suffix_input_ids, method="embed")
+
+        suffix_ar_mask = jnp.ones((suffix_input_ids.shape[1],), dtype=jnp.bool_)
+        suffix_attn_mask = make_attn_mask(suffix_input_mask, suffix_ar_mask)
+        # The physical prefix cache contains masked camera blocks and language padding.
+        # Mask invalid suffix queries as well as invalid prefix keys.
+        prefix_region = suffix_input_mask[:, :, None] & prefix_mask[:, None, :]
+        full_attn_mask = jnp.concatenate([prefix_region, suffix_attn_mask], axis=-1)
+        prefix_length = jnp.sum(prefix_mask, axis=1)
+        suffix_positions = prefix_length[:, None] + jnp.cumsum(suffix_input_mask, axis=1) - 1
+        (suffix_out, _), _ = self.PaliGemma.llm(
+            [suffix_embeddings, None],
+            kv_cache=kv_cache,
+            mask=full_attn_mask,
+            positions=suffix_positions,
         )
 
-    def _compute_fast_loss(self, observation: _model.Observation, *, encoded_images: EncodedImages | None = None):
-        full_embeddings, full_input_mask, full_ar_mask = self.embed_ki_inputs(
-            observation, encoded_images=encoded_images
-        )
-        full_attn_mask = make_attn_mask(full_input_mask, full_ar_mask)
-        full_positions = jnp.cumsum(full_input_mask, axis=1) - 1
-        model_embeddings = full_embeddings[:, :-1]
-        model_attn_mask = full_attn_mask[:, :-1, :-1]
-        model_positions = full_positions[:, :-1]
-        assert model_embeddings.shape[1] == full_embeddings.shape[1] - 1
-        assert model_attn_mask.shape[-2:] == (model_embeddings.shape[1], model_embeddings.shape[1])
-        assert model_positions.shape[1] == model_embeddings.shape[1]
-        (vlm_out, _), _ = self.PaliGemma.llm([model_embeddings, None], mask=model_attn_mask, positions=model_positions)
-        targets = observation.ki_tokens[:, 1:]
-        loss_mask = observation.ki_loss_mask[:, 1:]
-        token_hidden = vlm_out[:, -targets.shape[1] :]
-        assert token_hidden.shape[:2] == targets.shape
+        # This is a physical tensor index. It intentionally differs from the
+        # logical RoPE position above when the prefix mask has interior holes.
+        physical_indices = jnp.arange(prefix_mask.shape[1])[None, :]
+        last_valid_index = jnp.max(jnp.where(prefix_mask, physical_indices, -1), axis=1)
+        last_prefix_hidden = jnp.take_along_axis(prefix_out, last_valid_index[:, None, None], axis=1)[:, 0]
+        prediction_hidden = jnp.concatenate([last_prefix_hidden[:, None, :], suffix_out], axis=1)
+        assert prediction_hidden.shape[:2] == targets.shape
         assert targets.shape == loss_mask.shape
-        logits = self.PaliGemma.llm(token_hidden, method="decode")
+        logits = self.PaliGemma.llm(prediction_hidden, method="decode")
         token_ce = -jnp.take_along_axis(jax.nn.log_softmax(logits, axis=-1), targets[..., None], axis=-1)[..., 0]
         counts = jnp.sum(loss_mask, axis=-1)
         per_example = jnp.sum(token_ce * loss_mask, axis=-1) / jnp.maximum(counts, 1)
@@ -325,6 +340,7 @@ class Pi0(_model.BaseModel):
     def _compute_flow_loss_preprocessed(
         self, noise_rng, time_rng, delay_rng, observation, actions, *, encoded_images: EncodedImages | None = None
     ):
+        """Pre-refactor independent-prefix FM path retained as a test reference."""
         batch_shape = actions.shape[:-2]
         noise = jax.random.normal(noise_rng, actions.shape)
         time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
@@ -340,6 +356,36 @@ class Pi0(_model.BaseModel):
         prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
         _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=prefix_positions)
         kv_cache = jax.tree.map(jax.lax.stop_gradient, kv_cache)
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
+        suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+        prefix_region = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+        full_attn_mask = jnp.concatenate([prefix_region, suffix_attn_mask], axis=-1)
+        suffix_positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+        (_, suffix_out), _ = self.PaliGemma.llm(
+            [None, suffix_tokens],
+            kv_cache=kv_cache,
+            mask=full_attn_mask,
+            positions=suffix_positions,
+            adarms_cond=[None, adarms_cond],
+        )
+        v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        return loss if action_prefix_mask is None else normalize_postfix_loss(loss, action_prefix_mask)
+
+    def _compute_flow_loss_from_prefix_cache(
+        self, noise_rng, time_rng, delay_rng, observation, actions, *, prefix_mask, kv_cache
+    ):
+        """Compute the unchanged FM objective from an already detached prefix cache."""
+        batch_shape = actions.shape[:-2]
+        noise = jax.random.normal(noise_rng, actions.shape)
+        time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
+        if self.train_time_rtc_max_delay > 0:
+            delay = sample_train_time_rtc_delay(delay_rng, batch_shape, self.train_time_rtc_max_delay)
+            x_t, time, action_prefix_mask = apply_train_time_rtc_corruption(actions, noise, time, delay)
+        else:
+            action_prefix_mask = None
+            x_t = time[..., None, None] * noise + (1 - time[..., None, None]) * actions
+        u_t = noise - actions
         suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
         suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
         prefix_region = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
@@ -375,9 +421,22 @@ class Pi0(_model.BaseModel):
             delay_rng = None
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
         encoded_images = self._encode_images(observation)
-        fast, correct, target_count = self._compute_fast_loss(observation, encoded_images=encoded_images)
-        flow = self._compute_flow_loss_preprocessed(
-            noise_rng, time_rng, delay_rng, observation, actions, encoded_images=encoded_images
+        prefix_out, prefix_mask, kv_common = self._forward_prefix(observation, encoded_images=encoded_images)
+        fast, correct, target_count = self._compute_fast_loss_from_shared_prefix(
+            observation,
+            prefix_out=prefix_out,
+            prefix_mask=prefix_mask,
+            kv_cache=kv_common,
+        )
+        flow_kv = jax.tree.map(jax.lax.stop_gradient, kv_common)
+        flow = self._compute_flow_loss_from_prefix_cache(
+            noise_rng,
+            time_rng,
+            delay_rng,
+            observation,
+            actions,
+            prefix_mask=prefix_mask,
+            kv_cache=flow_kv,
         )
         fast_scalar, flow_scalar = jnp.mean(fast), jnp.mean(flow)
         total = self.ki_fast_loss_weight * fast_scalar + self.ki_flow_loss_weight * flow_scalar

@@ -85,7 +85,7 @@ def _reference_encode_images(model: _pi0.Pi0, observation: _model.Observation) -
     )
 
 
-def test_ki_encoded_images_and_losses_match_independent_reference(monkeypatch):
+def test_ki_shared_prefix_matches_independent_flow_reference(monkeypatch):
     model, observation, actions = _make_ki_model_and_batch()
 
     image_module = model.PaliGemma.img
@@ -110,27 +110,118 @@ def test_ki_encoded_images_and_losses_match_independent_reference(monkeypatch):
     assert encoded_images.ar_mask.shape == (encoded_images.tokens.shape[1],)
 
     noise_rng, time_rng = jax.random.split(jax.random.key(1))
-    reference_fast, reference_correct, reference_count = model._compute_fast_loss(observation)  # noqa: SLF001
+    _, reference_prefix_mask, reference_kv = model._forward_prefix(observation)  # noqa: SLF001
     reference_flow = model._compute_flow_loss_preprocessed(  # noqa: SLF001
         noise_rng, time_rng, None, observation, actions
     )
-    shared_fast, shared_correct, shared_count = model._compute_fast_loss(  # noqa: SLF001
+    prefix_out, prefix_mask, kv_common = model._forward_prefix(  # noqa: SLF001
         observation, encoded_images=encoded_images
     )
-    shared_flow = model._compute_flow_loss_preprocessed(  # noqa: SLF001
-        noise_rng, time_rng, None, observation, actions, encoded_images=encoded_images
+    shared_fast, shared_correct, shared_count = model._compute_fast_loss_from_shared_prefix(  # noqa: SLF001
+        observation,
+        prefix_out=prefix_out,
+        prefix_mask=prefix_mask,
+        kv_cache=kv_common,
+    )
+    shared_flow = model._compute_flow_loss_from_prefix_cache(  # noqa: SLF001
+        noise_rng,
+        time_rng,
+        None,
+        observation,
+        actions,
+        prefix_mask=prefix_mask,
+        kv_cache=jax.tree.map(jax.lax.stop_gradient, kv_common),
     )
 
-    np.testing.assert_allclose(shared_fast, reference_fast, rtol=1e-5, atol=1e-5)
+    np.testing.assert_array_equal(prefix_mask, reference_prefix_mask)
+    for shared_leaf, reference_leaf in zip(jax.tree.leaves(kv_common), jax.tree.leaves(reference_kv), strict=True):
+        np.testing.assert_allclose(
+            np.asarray(shared_leaf, dtype=np.float32),
+            np.asarray(reference_leaf, dtype=np.float32),
+            rtol=1e-5,
+            atol=1e-5,
+        )
     np.testing.assert_allclose(shared_flow, reference_flow, rtol=1e-5, atol=1e-5)
-    np.testing.assert_array_equal(shared_correct, reference_correct)
-    np.testing.assert_array_equal(shared_count, reference_count)
+    assert np.all(np.isfinite(shared_fast))
+    assert np.isfinite(shared_correct)
+    assert shared_count == observation.ki_action_token_mask.sum()
 
-    reference_total = model.ki_fast_loss_weight * jnp.mean(reference_fast) + model.ki_flow_loss_weight * jnp.mean(
-        reference_flow
+
+def test_ki_fast_incremental_matches_one_shot_with_mask_hole():
+    model, observation, _ = _make_ki_model_and_batch()
+    observation = observation.replace(
+        ki_action_tokens=jnp.tile(jnp.arange(1, 9, dtype=jnp.int32), (2, 1)),
+        ki_action_token_mask=jnp.asarray([[True, True, True, True, False, False, False, False]] * 2),
     )
-    shared_total = model.ki_fast_loss_weight * jnp.mean(shared_fast) + model.ki_flow_loss_weight * jnp.mean(shared_flow)
-    np.testing.assert_allclose(shared_total, reference_total, rtol=1e-5, atol=1e-5)
+    encoded_images = _pi0.EncodedImages(
+        tokens=jnp.zeros((2, 3, 64), dtype=jnp.float32),
+        token_mask=jnp.asarray([[True, False, True]] * 2),
+        ar_mask=jnp.zeros((3,), dtype=jnp.bool_),
+    )
+
+    prefix_tokens, prefix_mask, prefix_ar_mask = model.embed_prefix(observation, encoded_images=encoded_images)
+    prefix_attn_mask = _pi0.make_attn_mask(prefix_mask, prefix_ar_mask)
+    prefix_positions = jnp.cumsum(prefix_mask, axis=1) - 1
+    (prefix_out, _), kv_cache = model.PaliGemma.llm(
+        [prefix_tokens, None], mask=prefix_attn_mask, positions=prefix_positions
+    )
+
+    targets = observation.ki_action_tokens
+    target_mask = observation.ki_action_token_mask
+    suffix_input_ids = targets[:, :-1]
+    suffix_input_mask = target_mask[:, :-1]
+    suffix_embeddings = model.PaliGemma.llm(suffix_input_ids, method="embed")
+    suffix_ar_mask = jnp.ones((suffix_input_ids.shape[1],), dtype=jnp.bool_)
+    suffix_attn_mask = _pi0.make_attn_mask(suffix_input_mask, suffix_ar_mask)
+    prefix_region = suffix_input_mask[:, :, None] & prefix_mask[:, None, :]
+    incremental_mask = jnp.concatenate([prefix_region, suffix_attn_mask], axis=-1)
+    suffix_positions = jnp.sum(prefix_mask, axis=1)[:, None] + jnp.cumsum(suffix_input_mask, axis=1) - 1
+    (incremental_suffix_out, _), _ = model.PaliGemma.llm(
+        [suffix_embeddings, None],
+        kv_cache=kv_cache,
+        mask=incremental_mask,
+        positions=suffix_positions,
+    )
+
+    full_embeddings = jnp.concatenate([prefix_tokens, suffix_embeddings], axis=1)
+    full_input_mask = jnp.concatenate([prefix_mask, suffix_input_mask], axis=1)
+    full_ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
+    full_attn_mask = _pi0.make_attn_mask(full_input_mask, full_ar_mask)
+    full_positions = jnp.cumsum(full_input_mask, axis=1) - 1
+    (one_shot_out, _), _ = model.PaliGemma.llm([full_embeddings, None], mask=full_attn_mask, positions=full_positions)
+    one_shot_prefix_out = one_shot_out[:, : prefix_tokens.shape[1]]
+    one_shot_suffix_out = one_shot_out[:, prefix_tokens.shape[1] :]
+
+    np.testing.assert_allclose(
+        np.asarray(prefix_out, dtype=np.float32)[np.asarray(prefix_mask)],
+        np.asarray(one_shot_prefix_out, dtype=np.float32)[np.asarray(prefix_mask)],
+        rtol=2e-2,
+        atol=2e-2,
+    )
+    valid_suffix = np.asarray(suffix_input_mask)
+    np.testing.assert_allclose(
+        np.asarray(incremental_suffix_out, dtype=np.float32)[valid_suffix],
+        np.asarray(one_shot_suffix_out, dtype=np.float32)[valid_suffix],
+        rtol=2e-2,
+        atol=2e-2,
+    )
+
+    physical_indices = jnp.arange(prefix_mask.shape[1])[None, :]
+    last_valid_index = jnp.max(jnp.where(prefix_mask, physical_indices, -1), axis=1)
+    assert np.all(np.asarray(last_valid_index) > np.asarray(prefix_mask.sum(axis=1) - 1))
+    incremental_last = jnp.take_along_axis(prefix_out, last_valid_index[:, None, None], axis=1)
+    one_shot_last = jnp.take_along_axis(one_shot_prefix_out, last_valid_index[:, None, None], axis=1)
+    incremental_prediction = jnp.concatenate([incremental_last, incremental_suffix_out], axis=1)
+    one_shot_prediction = jnp.concatenate([one_shot_last, one_shot_suffix_out], axis=1)
+    incremental_logits = model.PaliGemma.llm(incremental_prediction, method="decode")
+    one_shot_logits = model.PaliGemma.llm(one_shot_prediction, method="decode")
+    valid_targets = np.asarray(target_mask)
+    np.testing.assert_allclose(
+        np.asarray(incremental_logits, dtype=np.float32)[valid_targets],
+        np.asarray(one_shot_logits, dtype=np.float32)[valid_targets],
+        rtol=2e-2,
+        atol=2e-2,
+    )
 
 
 def test_ki_compute_loss_encodes_images_once(monkeypatch):
@@ -151,6 +242,23 @@ def test_ki_compute_loss_encodes_images_once(monkeypatch):
 
     monkeypatch.setattr(_pi0.Pi0, "_encode_images", fake_encode_images)
     total, _ = model.compute_loss_with_aux(jax.random.key(2), observation, actions, train=False)
+
+    assert np.isfinite(total)
+    assert call_count == 1
+
+
+def test_ki_compute_loss_forwards_prefix_once(monkeypatch):
+    model, observation, actions = _make_ki_model_and_batch()
+    call_count = 0
+    original = _pi0.Pi0._forward_prefix  # noqa: SLF001
+
+    def counted_forward_prefix(self, *args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(_pi0.Pi0, "_forward_prefix", counted_forward_prefix)
+    total, _ = model.compute_loss_with_aux(jax.random.key(3), observation, actions, train=False)
 
     assert np.isfinite(total)
     assert call_count == 1

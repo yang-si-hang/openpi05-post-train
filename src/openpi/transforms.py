@@ -290,23 +290,18 @@ class TokenizeFASTInputs(DataTransformFn):
 
 @dataclasses.dataclass(frozen=True)
 class TokenizeKnowledgeInsulation(DataTransformFn):
-    """Create FAST targets without consuming the shared Pi0.5 prompt or actions."""
+    """Create action-only FAST targets from normalized, unpadded actions."""
 
     tokenizer: _tokenizer.FASTTokenizer
 
     def __call__(self, data: DataDict) -> DataDict:
-        if "prompt" not in data:
-            raise ValueError("KI training transform requires prompt before model transforms")
-        prompt = data["prompt"]
-        if not isinstance(prompt, str):
-            prompt = prompt.item()
-        tokens, token_mask, ar_mask, loss_mask = self.tokenizer.tokenize(prompt, data["state"], data["actions"])
+        if "actions" not in data:
+            raise ValueError("KI training transform requires actions")
+        tokens, token_mask, _ = self.tokenizer.tokenize_action_suffix(data["actions"])
         return {
             **data,
-            "ki_tokens": tokens.astype(np.int32),
-            "ki_token_mask": token_mask.astype(np.bool_),
-            "ki_ar_mask": ar_mask.astype(np.bool_),
-            "ki_loss_mask": loss_mask.astype(np.bool_),
+            "ki_action_tokens": tokens.astype(np.int32),
+            "ki_action_token_mask": token_mask.astype(np.bool_),
         }
 
 

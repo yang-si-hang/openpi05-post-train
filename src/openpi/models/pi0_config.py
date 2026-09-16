@@ -112,16 +112,10 @@ class Pi0Config(_model.BaseModelConfig):
                 state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
                 tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
                 tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
-                ki_tokens=jax.ShapeDtypeStruct([batch_size, self.ki_max_token_len], jnp.int32)
+                ki_action_tokens=jax.ShapeDtypeStruct([batch_size, self.ki_max_token_len], jnp.int32)
                 if self.knowledge_insulation
                 else None,
-                ki_token_mask=jax.ShapeDtypeStruct([batch_size, self.ki_max_token_len], jnp.bool_)
-                if self.knowledge_insulation
-                else None,
-                ki_ar_mask=jax.ShapeDtypeStruct([batch_size, self.ki_max_token_len], jnp.bool_)
-                if self.knowledge_insulation
-                else None,
-                ki_loss_mask=jax.ShapeDtypeStruct([batch_size, self.ki_max_token_len], jnp.bool_)
+                ki_action_token_mask=jax.ShapeDtypeStruct([batch_size, self.ki_max_token_len], jnp.bool_)
                 if self.knowledge_insulation
                 else None,
             )

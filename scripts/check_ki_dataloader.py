@@ -36,10 +36,8 @@ def main(args: Args) -> None:
         peak_rss = max(peak_rss, process.memory_info().rss)
         expected = (config.batch_size, config.model.ki_max_token_len)
         fields = {
-            "ki_tokens": (observation.ki_tokens, np.int32),
-            "ki_token_mask": (observation.ki_token_mask, np.bool_),
-            "ki_ar_mask": (observation.ki_ar_mask, np.bool_),
-            "ki_loss_mask": (observation.ki_loss_mask, np.bool_),
+            "ki_action_tokens": (observation.ki_action_tokens, np.int32),
+            "ki_action_token_mask": (observation.ki_action_token_mask, np.bool_),
         }
         for name, (value, dtype) in fields.items():
             assert value is not None, name

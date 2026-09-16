@@ -73,20 +73,31 @@ def main(args: Args) -> None:
 
     def fast_loss(module: _pi0.Pi0):
         encoded_images = module._encode_images(processed)  # noqa: SLF001
+        prefix_out, prefix_mask, kv_cache = module._forward_prefix(  # noqa: SLF001
+            processed, encoded_images=encoded_images
+        )
         return jnp.mean(
-            module._compute_fast_loss(processed, encoded_images=encoded_images)[0]  # noqa: SLF001
+            module._compute_fast_loss_from_shared_prefix(  # noqa: SLF001
+                processed,
+                prefix_out=prefix_out,
+                prefix_mask=prefix_mask,
+                kv_cache=kv_cache,
+            )[0]
         )
 
     def flow_loss(module: _pi0.Pi0):
         encoded_images = module._encode_images(processed)  # noqa: SLF001
+        _, prefix_mask, kv_cache = module._forward_prefix(processed, encoded_images=encoded_images)  # noqa: SLF001
+        flow_kv = jax.tree.map(jax.lax.stop_gradient, kv_cache)
         return jnp.mean(
-            module._compute_flow_loss_preprocessed(  # noqa: SLF001
+            module._compute_flow_loss_from_prefix_cache(  # noqa: SLF001
                 jax.random.key(2),
                 jax.random.key(3),
                 None,
                 processed,
                 actions,
-                encoded_images=encoded_images,
+                prefix_mask=prefix_mask,
+                kv_cache=flow_kv,
             )
         )
 
